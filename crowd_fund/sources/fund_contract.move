@@ -12,27 +12,27 @@ module crowd_fund::fund_contract {
 
   // ====== Errors ======
 
-  const ENotFundOwner: u64 = 0;
+  const ENotFundOwner: u64 = 1; // Updated error code to avoid conflict
+  const EInsufficientFunds: u64 = 2; // Added error code for insufficient funds
 
 
   // ====== Objects ======
   
   struct Fund has key {
-    id: UID,
+    fund_id: UID,
     target: u64, // in USD 
     raised: Balance<SUI>,
   }
 
   struct Receipt has key {
     id: UID, 
-    amount_donated: u64, // in MIST - 10^-9 of a SUI. One billion MIST equals one SUI. 
+    amount_donated: u64, // in SUI
   }
 
   // Capability that grants a fund creator the right to withdraw funds.
   struct FundOwnerCap has key { 
-    id: UID,
-    fund_id: ID, 
-     }
+    fund_id: ID,
+  }
 
 
   // ====== Events ======
@@ -50,14 +50,13 @@ module crowd_fund::fund_contract {
     let fund_id: ID = object::uid_to_inner(&fund_uid);
 
     let fund = Fund {
-        id: fund_uid,
+        fund_id: fund_uid,
         target,
         raised: balance::zero(),
     };
 
     // create and send a fund owner capability for the creator
-     transfer::transfer(FundOwnerCap {
-          id: object::new(ctx),
+    transfer::transfer(FundOwnerCap {
           fund_id: fund_id,
         }, tx_context::sender(ctx));
 
@@ -67,6 +66,9 @@ module crowd_fund::fund_contract {
 
   public entry fun donate(oracle_holder: &OracleHolder, fund: &mut Fund, amount: Coin<SUI>, ctx: &mut TxContext) {
 
+    // Check for authorized donor
+    assert!(tx_context::sender(ctx) != fund.fund_id, ENotFundOwner);
+
     // get the amount being donated in SUI for receipt.
     let amount_donated: u64 = coin::value(&amount);
 
@@ -74,43 +76,58 @@ module crowd_fund::fund_contract {
     let coin_balance = coin::into_balance(amount);
     balance::join(&mut fund.raised, coin_balance);
 
-    // get price of sui_usdt using Supra's Oracle SValueFeed
+    // get price of SUI in USD using Supra's Oracle SValueFeed
     let (price, _,_,_) = get_price(oracle_holder, 90);
 
-    // adjust price to have the same number of decimal points as SUI
-    let adjusted_price = price / 1000000000;
-
-    // get the total raised amount so far in SUI
+    // calculate total raised amount in SUI
     let raised_amount_sui = (balance::value(&fund.raised) as u128);
 
-    // get the fund target amount in USD
-    let fund_target_usd = (fund.target as u128) * 1000000000; // to align with 9 decimal places
+    // calculate total raised amount in USD
+    let raised_amount_usd = (raised_amount_sui * price) / 1000000000; // adjusting decimals
 
-    // check if the fund target in USD has been reached (by the amount donated in SUI)
-    if ((raised_amount_sui * adjusted_price) >= fund_target_usd) {
+    // check if the fund target in USD has been reached
+    if raised_amount_usd >= fund.target {
       // emit event that the target has been reached
         event::emit(TargetReached { raised_amount_sui });
     };
       
-    // create and send receipt NFT to the donor (for tax purposes :))
+    // create and send receipt NFT to the donor
     let receipt: Receipt = Receipt {
         id: object::new(ctx), 
         amount_donated,
       };
       
-      transfer::transfer(receipt, tx_context::sender(ctx));
+    transfer::transfer(receipt, tx_context::sender(ctx));
   }
 
   // withdraw funds from the fund contract, requires a fund owner capability that matches the fund id
   public entry fun withdraw_funds(cap: &FundOwnerCap, fund: &mut Fund, ctx: &mut TxContext) {
 
-    assert!(&cap.fund_id == object::uid_as_inner(&fund.id), ENotFundOwner);
+    assert!(cap.fund_id == fund.fund_id, ENotFundOwner);
 
     let amount: u64 = balance::value(&fund.raised);
 
+    if amount == 0 {
+      return Err(EInsufficientFunds);
+    }
+
     let raised: Coin<SUI> = coin::take(&mut fund.raised, amount, ctx);
 
-    transfer::public_transfer(raised, tx_context::sender(ctx));
-    
+    transfer::public_transfer(raised, tx_context::sender(ctx));   
+  }
+
+  // Getter functions for fund details
+  public fun get_fund_target(fund: &Fund) -> u64 {
+    fund.target
+  }
+
+  public fun get_raised_amount_sui(fund: &Fund) -> u64 {
+    balance::value(&fund.raised)
+  }
+
+  public fun get_raised_amount_usd(oracle_holder: &OracleHolder, fund: &Fund) -> u64 {
+    let (price, _,_,_) = get_price(oracle_holder, 90);
+    let raised_amount_sui = balance::value(&fund.raised) as u128;
+    (raised_amount_sui * price) / 1000000000
   }
 }
