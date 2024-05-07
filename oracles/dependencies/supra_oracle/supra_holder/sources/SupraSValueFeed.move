@@ -58,7 +58,6 @@ module supra_holder::SupraSValueFeed {
     /// It will return the priceFeedData value for that particular tradingPair
     public fun get_price(oracle_holder: &OracleHolder, pair: u32) : (u128, u16, u128, u64) {
         assert!(oracle_holder.version == VERSION, EWRONG_ORACLE_HOLDER_VERSION);
-        assert!(is_pair_exist(oracle_holder, pair), EINVALID_PAIR);
         let feed = table::borrow(&oracle_holder.feeds, pair);
         (feed.value, feed.decimal, feed.timestamp, feed.round)
     }
